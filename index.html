@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Phi Cone Spirals — Rainbow Counter-Spin</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<style>
+  html,body{
+    margin:0;height:100%;
+    background:#0b1020;color:#e8eefc;
+    font-family:system-ui,Segoe UI,Roboto,sans-serif;
+    overflow:hidden;
+  }
+  canvas{display:block}
+  #ui{
+    position:fixed;right:16px;top:16px;width:360px;
+    background:rgba(25,28,40,.85);
+    border:1px solid rgba(255,255,255,.1);
+    border-radius:12px;padding:12px;
+    backdrop-filter:blur(6px);box-sizing:border-box;
+  }
+  #ui h3{margin:0 0 8px;font-size:16px}
+  .row{
+    margin:8px 0;
+    display:grid;
+    grid-template-columns:1fr auto;
+    gap:8px;
+    align-items:center;
+    font-size:13px;
+  }
+  .row input[type="range"],
+  .row select{
+    grid-column:1/3;
+    width:100%;
+    accent-color:#7aa2ff;
+  }
+  .row input[type="number"]{
+    width:140px;
+    background:#151826;
+    border:1px solid rgba(255,255,255,.18);
+    border-radius:6px;
+    padding:3px 6px;
+    color:#e8eefc;
+    font-size:12px;
+    box-sizing:border-box;
+  }
+  small{opacity:.7;line-height:1.2;font-size:11px}
+</style>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.157.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.157.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="ui">
+  <h3>Phi Cone Spirals</h3>
+
+  <div class="row">
+    <label>Polygon sides</label>
+    <span id="sidesVal">6</span>
+    <input id="sides" type="range" min="3" max="20" value="6">
+  </div>
+
+  <div class="row">
+    <label>Iterations (φ steps)</label>
+    <span id="itersVal">14</span>
+    <input id="iters" type="range" min="2" max="30" value="14">
+  </div>
+
+  <div class="row">
+    <label>Apex angle (°)</label>
+    <input
+      id="apexNumber"
+      type="number"
+      min="0"
+      max="180"
+      step="0.0000000001"
+      value="60"
+    >
+    <input id="apexSlider" type="range" min="0" max="180" value="60">
+  </div>
+
+  <div class="row">
+    <label>Direction</label>
+    <select id="direction">
+      <option value="in" selected>Inward (to apex)</option>
+      <option value="out">Outward</option>
+    </select>
+  </div>
+
+  <small>
+    Mouse drag: rotate • Wheel: zoom<br>
+    Polygon sides = number of spiral arms.<br>
+    Apex = 0° or 180° ⇒ flattened 2D φ-spirals.<br>
+    Main & counter spirals drift opposite ways through the rainbow.
+  </small>
+</div>
+
+<script type="module">
+  import * as THREE from "three";
+  import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+
+  const phi = (1 + Math.sqrt(5)) / 2;
+
+  // UI elements
+  const sidesInput = document.getElementById("sides");
+  const sidesVal   = document.getElementById("sidesVal");
+  const itersInput = document.getElementById("iters");
+  const itersVal   = document.getElementById("itersVal");
+  const apexSlider = document.getElementById("apexSlider");
+  const apexNumber = document.getElementById("apexNumber");
+  const dirSelect  = document.getElementById("direction");
+
+  // Scene setup
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x05070f);
+
+  const camera = new THREE.PerspectiveCamera(
+    60,
+    window.innerWidth / window.innerHeight,
+    0.1,
+    5000
+  );
+  camera.position.set(0, 150, 320);
+
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(window.devicePixelRatio);
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  document.body.appendChild(renderer.domElement);
+
+  const controls = new OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.08;
+  controls.target.set(0, -40, 0);
+
+  const ambient = new THREE.AmbientLight(0xffffff, 0.3);
+  scene.add(ambient);
+  const dirLight = new THREE.DirectionalLight(0xffffff, 0.7);
+  dirLight.position.set(200, 300, 150);
+  scene.add(dirLight);
+
+  const spiralGroup = new THREE.Group();
+  scene.add(spiralGroup);
+
+  // We'll keep track of the line objects so we can recolor them in animate()
+  let mainLines = [];
+  let counterLines = [];
+
+  const clock = new THREE.Clock();
+
+  function hookRangeDisplay(input, labelEl, onChange) {
+    labelEl.textContent = input.value;
+    input.addEventListener("input", () => {
+      labelEl.textContent = input.value;
+      onChange();
+    });
+  }
+
+  hookRangeDisplay(sidesInput, sidesVal, rebuild);
+  hookRangeDisplay(itersInput, itersVal, rebuild);
+
+  // --- Apex slider <-> number sync with "commit on change" ---
+
+  // Slider moves → update number, rebuild only when sliding ends
+  apexSlider.addEventListener("input", () => {
+    apexNumber.value = apexSlider.value;
+  });
+
+  apexSlider.addEventListener("change", () => {
+    rebuild();
+  });
+
+  // Number typed → keep slider visually in sync, rebuild only on change
+  apexNumber.addEventListener("input", () => {
+    const v = apexNumber.value;
+    if (!isNaN(parseFloat(v))) {
+      apexSlider.value = v;
+    }
+    // No rebuild here: allows smooth decimal typing
+  });
+
+  apexNumber.addEventListener("change", () => {
+    let val = parseFloat(apexNumber.value);
+    if (isNaN(val)) val = 0;
+    if (val < 0) val = 0;
+    if (val > 180) val = 180;
+    apexNumber.value = val;
+    apexSlider.value = val;
+    rebuild();
+  });
+
+  dirSelect.addEventListener("change", rebuild);
+
+  function clearGroup(group) {
+    while (group.children.length > 0) {
+      const obj = group.children.pop();
+      if (obj.geometry) obj.geometry.dispose();
+      if (obj.material) obj.material.dispose();
+    }
+  }
+
+  function rebuild() {
+    clearGroup(spiralGroup);
+    mainLines = [];
+    counterLines = [];
+
+    const n          = parseInt(sidesInput.value, 10);
+    const iterations = parseInt(itersInput.value, 10);
+    const apexDeg    = parseFloat(apexNumber.value);
+    const direction  = dirSelect.value;
+
+    const deltaTheta = (2 * Math.PI) / n;
+    const maxTheta   = iterations * deltaTheta;
+    const baseRadius = 100;
+
+    // Flat 2D mode at 0° or 180°
+    const EPS = 1e-9;
+    const isFlat = (apexDeg <= EPS || apexDeg >= 180 - EPS);
+
+    let tanHalf = null;
+
+    if (!isFlat) {
+      const apexRad   = (apexDeg * Math.PI) / 180;
+      const halfAngle = apexRad / 2;
+      tanHalf = Math.tan(halfAngle);
+    }
+
+    function radiusForTheta(theta) {
+      const power = theta / deltaTheta;
+      if (direction === "in") {
+        return baseRadius * Math.pow(1 / phi, power);
+      } else {
+        return baseRadius * Math.pow(phi, power);
+      }
+    }
+
+    const stepsPerSegment = 40;
+    const step = deltaTheta / stepsPerSegment;
+
+    for (let k = 0; k < n; k++) {
+      const baseAngle = (2 * Math.PI * k) / n; // one arm per polygon corner
+
+      // MAIN spiral (baseAngle + theta)
+      const ptsMain = [];
+      for (let theta = 0; theta <= maxTheta + 1e-6; theta += step) {
+        const r   = radiusForTheta(theta);
+        const ang = baseAngle + theta;
+        const x   = r * Math.cos(ang);
+        const z   = r * Math.sin(ang);
+        const y   = isFlat ? 0 : -r / tanHalf; // invisible cone, apex at (0,0,0)
+        ptsMain.push(new THREE.Vector3(x, y, z));
+      }
+      const geomMain = new THREE.BufferGeometry().setFromPoints(ptsMain);
+      const matMain  = new THREE.LineBasicMaterial({ color: 0xffffff });
+      const lineMain = new THREE.Line(geomMain, matMain);
+      lineMain.userData.armIndex = k;
+      spiralGroup.add(lineMain);
+      mainLines.push(lineMain);
+
+      // COUNTER spiral (baseAngle - theta)
+      const ptsCounter = [];
+      for (let theta = 0; theta <= maxTheta + 1e-6; theta += step) {
+        const r   = radiusForTheta(theta);
+        const ang = baseAngle - theta;
+        const x   = r * Math.cos(ang);
+        const z   = r * Math.sin(ang);
+        const y   = isFlat ? 0 : -r / tanHalf;
+        ptsCounter.push(new THREE.Vector3(x, y, z));
+      }
+      const geomCounter = new THREE.BufferGeometry().setFromPoints(ptsCounter);
+      const matCounter  = new THREE.LineBasicMaterial({ color: 0xffffff });
+      const lineCounter = new THREE.Line(geomCounter, matCounter);
+      lineCounter.userData.armIndex = k;
+      spiralGroup.add(lineCounter);
+      counterLines.push(lineCounter);
+    }
+  }
+
+  function onResize() {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  }
+  window.addEventListener("resize", onResize);
+
+  function animate() {
+    requestAnimationFrame(animate);
+
+    const t = clock.getElapsedTime();
+    const n = parseInt(sidesInput.value, 10) || 1;
+
+    // Speed of hue rotation
+    const speed = 0.4; // tweak if you want faster/slower
+
+    // Main spirals: hue goes forward
+    for (const line of mainLines) {
+      const k = line.userData.armIndex || 0;
+      let hue = (k / n + speed * t) % 1;
+      if (hue < 0) hue += 1;
+      line.material.color.setHSL(hue, 0.85, 0.55);
+    }
+
+    // Counter spirals: hue goes backward
+    for (const line of counterLines) {
+      const k = line.userData.armIndex || 0;
+      let hue = (k / n - speed * t) % 1;
+      if (hue < 0) hue += 1;
+      line.material.color.setHSL(hue, 0.75, 0.40);
+    }
+
+    controls.update();
+    renderer.render(scene, camera);
+  }
+
+  // Initial draw
+  rebuild();
+  animate();
+</script>
+</body>
+</html>
